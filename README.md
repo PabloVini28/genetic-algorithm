@@ -10,3 +10,8 @@
   - Python ![Python](https://img.shields.io/badge/Python-FFD43B?style=for-the-badge&logo=python&logoColor=blue) 
   - VsCode ![Visual Studio Code](https://img.shields.io/badge/Visual%20Studio%20Code-0078d7.svg?style=for-the-badge&logo=visual-studio-code&logoColor=white)
   - Gemini ![Google Gemini](https://img.shields.io/badge/google%20gemini-8E75B2?style=for-the-badge&logo=google%20gemini&logoColor=white)
+
+## To run:
+  - /TSPLIB95 on the project root
+  - create a environment(optional)
+  - python3 index.py --experimentos
