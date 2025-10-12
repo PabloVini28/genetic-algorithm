@@ -16,10 +16,26 @@ TÉCNICAS UTILIZADAS:
 - Mutação por troca de posições
 - Seleção por torneio
 - Elitismo (manutenção dos melhores indivíduos)
+
+ADAPTAÇÕES PARA TSPLIB95:
+- Carregamento automático de arquivos .tsp
+- Suporte a diferentes tipos de distância
+- Experimentos automatizados com coleta de dados
 """
 
 import random
-import json
+import time
+import csv
+import os
+from datetime import datetime
+
+# Importação da biblioteca TSPLIB95 (será instalada se necessário) - *Recomendação do professor*
+try:
+    import tsplib95
+    TSPLIB_DISPONIVEL = True
+except ImportError:
+    TSPLIB_DISPONIVEL = False
+    print("Biblioteca tsplib95 não encontrada. Execute: pip install tsplib95")
 
 class Grafo:
     """
@@ -30,68 +46,101 @@ class Grafo:
     
     Atributos:
     - nome: Nome identificador do grafo
-    - nomes_cidades: Lista com os nomes das cidades
-    - matriz_distancias: Matriz quadrada com distâncias entre cidades
+    - origem_tsplib: Indica se foi carregado da TSPLIB95
     """
 
-    def __init__(self, nome, nomes_cidades, matriz_distancias):
+    def __init__(self, nome, problema_tsplib=None):
         """
         Inicializa o grafo com nome, cidades e matriz de distâncias.
+        Pode ser criado manualmente ou a partir de um problema TSPLIB95.
         
         Args:
             nome (str): Nome do grafo
-            nomes_cidades (list): Lista de nomes das cidades
-            matriz_distancias (list): Matriz de distâncias entre cidades
+            nomes_cidades (list): Lista de nomes das cidades (para grafos manuais)
+            matriz_distancias (list): Matriz de distâncias entre cidades (para grafos manuais)
+            problema_tsplib: Problema carregado da TSPLIB95
         """
         self.nome = nome
-        self.nomes_cidades = nomes_cidades
-        self.matriz_distancias = matriz_distancias
+        self.origem_tsplib = problema_tsplib is not None
+        
+        if self.origem_tsplib:
+            # Carregar de TSPLIB95 - carregar da pasta TSPLIB95
+            self._carregar_de_tsplib(problema_tsplib)
+    
+    def _carregar_de_tsplib(self, problema):
+        """
+        Carrega dados de um problema TSPLIB95. // Basicamente eu crio a matriz de distâncias aqui
+        """
+        self.dimensao = problema.dimension
+        self.tipo = problema.type
+        self.edge_weight_type = getattr(problema, 'edge_weight_type', 'UNKNOWN')
+        
+        # Cria nomes das cidades baseados em índices
+        self.nomes_cidades = [str(i+1) for i in range(self.dimensao)]
+        
+        # Calcula matriz de distâncias usando a função do tsplib95
+        self.matriz_distancias = [[0] * self.dimensao for _ in range(self.dimensao)]
+        
+        for i in range(self.dimensao):
+            for j in range(self.dimensao):
+                if i != j:
+                    # CORREÇÃO: tsplib95 usa indexação 1-based, mas alguns formatos têm limitações
+                    # Precisamos verificar se o índice é válido antes de acessar
+                    try:
+                        peso = problema.get_weight(i + 1, j + 1)
+                        self.matriz_distancias[i][j] = peso
+                    except IndexError:
+                        # Alguns formatos como LOWER_DIAG_ROW não permitem todos os acessos
+                        # Neste caso, usamos a simetria da matriz para obter o valor
+                        try:
+                            peso = problema.get_weight(j + 1, i + 1)
+                            self.matriz_distancias[i][j] = peso
+                        except IndexError:
+                            # Se ainda não conseguir, define como 0 (não deveria acontecer)
+                            self.matriz_distancias[i][j] = 0
+                else:
+                    self.matriz_distancias[i][j] = 0
 
     def obter_distancia(self, cidade_origem_idx, cidade_destino_idx):
         """
         Retorna a distância entre duas cidades pelos seus índices.
-        
-        Args:
-            cidade_origem_idx (int): Índice da cidade de origem
-            cidade_destino_idx (int): Índice da cidade de destino
-            
-        Returns:
-            float: Distância entre as cidades
         """
         return self.matriz_distancias[cidade_origem_idx][cidade_destino_idx]
 
     def obter_nome_cidade(self, cidade_idx):
         """
         Retorna o nome da cidade pelo seu índice.
-        
-        Args:
-            cidade_idx (int): Índice da cidade
-            
-        Returns:
-            str: Nome da cidade
         """
         return self.nomes_cidades[cidade_idx]
 
     def total_cidades(self):
         """
         Retorna o número total de cidades no grafo.
-        
-        Returns:
-            int: Quantidade de cidades
         """
         return len(self.nomes_cidades)
 
     def cromossomo_para_nomes(self, cromossomo):
         """
         Converte um cromossomo (lista de índices) para uma lista de nomes de cidades.
-        
-        Args:
-            cromossomo (list): Lista de índices das cidades
-            
-        Returns:
-            list: Lista com nomes das cidades correspondentes
         """
         return [self.obter_nome_cidade(indice) for indice in cromossomo]
+    
+    @classmethod
+    def carregar_tsplib(cls, caminho_arquivo):
+        """
+        Carrega um grafo de um arquivo TSPLIB95.
+            
+        Retorna um Grafo : Instância do grafo carregado
+        """
+        if not TSPLIB_DISPONIVEL:
+            raise ImportError("Biblioteca tsplib95 não está disponível")
+        
+        try:
+            problema = tsplib95.load(caminho_arquivo)
+            nome = problema.name if problema.name else os.path.basename(caminho_arquivo).replace('.tsp', '') # Se não tiver nome, define o próprio nome do arquivo
+            return cls(nome, problema_tsplib=problema)
+        except Exception as e:
+            raise Exception(f"Erro ao carregar {caminho_arquivo}: {e}")
 
 
 class Individuo:
@@ -128,10 +177,8 @@ class Individuo:
     def calcular_fitness(self):
         """
         Calcula o fitness do indivíduo (distância total percorrida).
-        Critério utilizado : menor distância = melhor fitness.
-        
-        Returns:
-            float: Distância total percorrida na rota
+        Critério  Returns:
+            float: Distância total percorrida na rotautilizado : menor distância = melhor fitness.
         """
         distancia_total = 0
         for i in range(len(self.cromossomo)):
@@ -151,12 +198,6 @@ class Individuo:
         """
         Realiza crossover com outro indivíduo.
         Gera dois filhos preservando a ordem relativa dos genes.
-        
-        Args:
-            outro_individuo (Individuo): Outro pai para o crossover
-            
-        Returns:
-            list: Lista com dois filhos resultantes do crossover
         """
         tamanho = len(self.cromossomo)
         filho1_cromossomo = [-1] * tamanho
@@ -185,11 +226,6 @@ class Individuo:
         """
         Método auxiliar para preencher os genes restantes no crossover.
         Preenche as posições vazias (-1) com genes do pai, mantendo a ordem.
-        
-        Args:
-            cromossomo_filho (list): Cromossomo do filho a ser preenchido
-            cromossomo_pai (list): Cromossomo do pai para buscar genes
-            tamanho (int): Tamanho do cromossomo
         """
         ponteiro_pai = 0
         for i in range(tamanho):
@@ -203,9 +239,6 @@ class Individuo:
         """
         Aplica mutação por troca de posições.
         Com uma probabilidade definida pela taxa de mutação, troca duas cidades de posição.
-        
-        Args:
-            taxa_mutacao (float): Probabilidade de ocorrer mutação (0.0 a 1.0)
         """
         if random.random() < taxa_mutacao:
             # seleciona duas posições aleatórias e troca as cidades
@@ -241,10 +274,6 @@ class AlgoritmoGenetico:
     def __init__(self, grafo, tamanho_populacao=50):
         """
         Inicializa o algoritmo genético.
-        
-        Args:
-            grafo (Grafo): Grafo do problema a ser resolvido
-            tamanho_populacao (int): Tamanho da população (padrão: 50)
         """
         self.grafo = grafo
         self.tamanho_populacao = tamanho_populacao
@@ -276,8 +305,7 @@ class AlgoritmoGenetico:
         - Escolhe o melhor entre eles
         - Repete para selecionar o segundo pai
         
-        Returns:
-            tuple: Tupla com dois indivíduos selecionados como pais
+        Retorna uma tupla com dois indivíduos selecionados como pais
         """
         # seleção por torneio
         tamanho_torneio = 5
@@ -292,7 +320,7 @@ class AlgoritmoGenetico:
         pai2 = realizar_torneio()
         return pai1, pai2
 
-    def executar(self, num_geracoes, taxa_mutacao):
+    def executar(self, num_geracoes, taxa_mutacao, verbose=True):
         """
         Executa o algoritmo genético por um número especificado de gerações.
         
@@ -306,13 +334,18 @@ class AlgoritmoGenetico:
            - Elitismo
            - Substituição populacional
            - Avaliação da nova geração
-        4. Apresentação do resultado final
-        
-        Args:
-            num_geracoes (int): Número de gerações a evoluir
-            taxa_mutacao (float): Taxa de mutação (0.0 a 1.0)
+        4. Retorna métricas coletadas
+            
+        Retorna:
+            Dicionário com métricas:
+                - 'melhor_solucao': Valor da melhor solução encontrada
+                - 'tempo_execucao': Tempo total de execução em segundos
+                - 'rota': Sequência de cidades da melhor rota
         """
-        print(f"--- Resolvendo para o Grafo: {self.grafo.nome} ---")
+        inicio_tempo = time.time()
+        
+        if verbose:
+            print(f"--- Resolvendo para o Grafo: {self.grafo.nome} ---")
         
         # PASSO 1: Geração da população inicial
         self._inicializar_populacao()
@@ -324,7 +357,8 @@ class AlgoritmoGenetico:
         self._ordenar_populacao()
         self.melhor_solucao = self.populacao[0]
         
-        print(f"Geração 0 | Melhor distância: {self.melhor_solucao.distancia_percorrida}")
+        if verbose:
+            print(f"Geração 0 | Melhor distância: {self.melhor_solucao.distancia_percorrida}")
 
         # PASSO 3: Loop evolutivo - executa por num_geracoes
         for geracao_atual in range(1, num_geracoes + 1):
@@ -366,11 +400,22 @@ class AlgoritmoGenetico:
                 self.melhor_solucao = self.populacao[0]
             
             # RELATÓRIO: mostra progresso a cada 100 gerações
-            if geracao_atual % 100 == 0:
+            if verbose and geracao_atual % 100 == 0:
                 print(f"Geração {geracao_atual} | Melhor distância: {self.melhor_solucao.distancia_percorrida}")
 
-        # PASSO 4: Apresenta o resultado final para o grafo atual
-        self.apresentar_resultado_final()
+        # Calcula tempo total de execução
+        tempo_execucao = time.time() - inicio_tempo
+        
+        # PASSO 4: Apresenta o resultado final (se verbose)
+        if verbose:
+            self.apresentar_resultado_final()
+        
+        # Retorna métricas coletadas
+        return {
+            'melhor_solucao': self.melhor_solucao.distancia_percorrida,
+            'tempo_execucao': tempo_execucao,
+            'rota': self.melhor_solucao.cromossomo.copy()
+        }
 
     def apresentar_resultado_final(self):
         """
@@ -384,117 +429,184 @@ class AlgoritmoGenetico:
         print("-" * 35 + "\n")
 
 
+# =================================================================
+# FUNÇÕES PARA EXPERIMENTOS COM TSPLIB95
+# =================================================================
+
+def carregar_grafos_tsplib(diretorio="TSPLIB95", limite_vertices=100):
+    """
+    Carrega todos os grafos TSP válidos do diretório especificado.
+    
+    Retorna lista de objetos Grafo carregados da TSPLIB95
+    """
+    if not TSPLIB_DISPONIVEL:
+        print("Biblioteca tsplib95 não disponível!")
+        return []
+    
+    if not os.path.exists(diretorio):
+        print(f"Diretório {diretorio} não encontrado!")
+        return []
+    
+    grafos = []
+    # Lista de arquivos removida - problema de formato foi corrigido
+    
+    arquivos_tsp = [f for f in os.listdir(diretorio) if f.endswith('.tsp')]
+    arquivos_tsp.sort()
+    
+    print(f"Encontrados {len(arquivos_tsp)} arquivos TSP em {diretorio}")
+    
+    for arquivo in arquivos_tsp:
+        caminho = os.path.join(diretorio, arquivo)
+        
+        try:
+            grafo = Grafo.carregar_tsplib(caminho)
+            
+            if grafo.total_cidades() > limite_vertices:
+                print(f"Ignorando {arquivo}: {grafo.total_cidades()} vértices > {limite_vertices}")
+                continue
+            
+            grafos.append(grafo)
+            print(f"Carregado: {arquivo} ({grafo.total_cidades()} cidades)")
+            
+        except Exception as e:
+            print(f"Erro ao carregar {arquivo}: {str(e)[:50]}...")
+    
+    print(f"\nTotal de grafos carregados: {len(grafos)}")
+    return grafos
+
+
+def executar_experimentos_tsplib(grafos=None, num_execucoes=10, arquivo_csv="resultados_experimentos.csv"):
+    """
+    Executa experimentos automatizados com os grafos da TSPLIB95.
+    
+    MÉTRICAS COLETADAS:
+    1. Valor da melhor solução calculada pelo GA
+    2. Tempo de execução da melhor solução
+    """
+    
+    # Carrega grafos automaticamente se não fornecidos
+    if grafos is None:
+        grafos = carregar_grafos_tsplib()
+    
+    if not grafos:
+        print("Nenhum grafo disponível para experimentos!")
+        return []
+    
+    # Parâmetros do algoritmo genético
+    GERACOES = 500
+    TAXA_MUTACAO = 0.02 # Padrão 
+    TAMANHO_POPULACAO = 100
+    
+    print(f"\nINICIANDO EXPERIMENTOS AUTOMATIZADOS")
+    print(f"Configuração:")
+    print(f"   - Grafos: {len(grafos)}")
+    print(f"   - Execuções por grafo: {num_execucoes}")
+    print(f"   - Gerações: {GERACOES}")
+    print(f"   - Taxa de mutação: {TAXA_MUTACAO*100}%")
+    print(f"   - População: {TAMANHO_POPULACAO}")
+    print(f"   - Arquivo CSV: {arquivo_csv}")
+    print("=" * 60)
+    
+    resultados = []
+    total_experimentos = len(grafos) * num_execucoes
+    experimento_atual = 0
+    
+    for i, grafo in enumerate(grafos, 1):
+        print(f"\n[{i}/{len(grafos)}] Processando: {grafo.nome}")
+        print(f"Cidades: {grafo.total_cidades()}")
+        print(f"Executando {num_execucoes} vezes...")
+        
+        for execucao in range(1, num_execucoes + 1):
+            experimento_atual += 1
+            
+            print(f"Execução {execucao}/{num_execucoes} ", end="", flush=True)
+            
+            # Configura semente aleatória para reprodutibilidade
+            random.seed(time.time() * 1000 + experimento_atual)
+            
+            # Cria e executa o algoritmo genético
+            ag = AlgoritmoGenetico(grafo, tamanho_populacao=TAMANHO_POPULACAO)
+            resultado = ag.executar(num_geracoes=GERACOES, taxa_mutacao=TAXA_MUTACAO, verbose=False)
+            
+            # Salva resultado com as métricas solicitadas
+            registro = {
+                'nome_grafo': grafo.nome,
+                'num_cidades': grafo.total_cidades(),
+                'execucao': execucao,
+                'melhor_solucao': resultado['melhor_solucao'],  # MÉTRICA 1
+                'tempo_execucao': round(resultado['tempo_execucao'], 4),  # MÉTRICA 2
+                'data_execucao': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            resultados.append(registro)
+            
+            print(f"Distância: {resultado['melhor_solucao']} | Tempo: {resultado['tempo_execucao']:.2f}s")
+        
+        # Estatísticas do grafo atual
+        resultados_grafo = [r for r in resultados if r['nome_grafo'] == grafo.nome]
+        distancias = [r['melhor_solucao'] for r in resultados_grafo]
+        tempos = [r['tempo_execucao'] for r in resultados_grafo]
+        
+        print(f"Melhor: {min(distancias)} | Pior: {max(distancias)} | Média: {sum(distancias)/len(distancias):.1f}")
+        print(f"Tempo médio: {sum(tempos)/len(tempos):.2f}s")
+    
+    # Salva resultados em CSV
+    print(f"\nSalvando resultados em {arquivo_csv}...")
+    
+    with open(arquivo_csv, 'w', newline='', encoding='utf-8') as arquivo:
+        campos = ['nome_grafo', 'num_cidades', 'execucao', 'melhor_solucao', 'tempo_execucao', 'data_execucao']
+        escritor = csv.DictWriter(arquivo, fieldnames=campos)
+        
+        escritor.writeheader()
+        escritor.writerows(resultados)
+    
+    print(f"Arquivo CSV salvo com {len(resultados)} registros")
+    print(f"Experimentos concluídos!")
+    
+    return resultados
+
+
 if __name__ == "__main__":
     """
     EXECUÇÃO PRINCIPAL DO PROGRAMA
     ==============================
+    Executar experimentos automatizados com TSPLIB95
     
-    Este bloco define os grafos de teste e executa o algoritmo genético para cada um.
-    
-    PIPELINE DE EXECUÇÃO COMPLETO:
-    
-    1. DEFINIÇÃO DOS GRAFOS
-       - Cria diferentes instâncias do problema com cidades e distâncias
-       - Cada grafo representa um cenário de teste diferente
-    
-    2. CONFIGURAÇÃO DOS PARÂMETROS
-       - Define número de gerações e taxa de mutação
-       - Estes parâmetros controlam o comportamento do algoritmo
-    
-    3. EXECUÇÃO PARA CADA GRAFO
-       - Itera sobre todos os grafos definidos
-       - Para cada grafo, executa o algoritmo genético
-       - Apresenta os resultados de cada execução
+    Para experimentos TSPLIB95, execute: python index.py --experimentos
     """
     
-    # =================================================================
-    # PASSO 1: DEFINIÇÃO DOS GRAFOS DE TESTE
-    # =================================================================
+    import sys
     
-    # Grafo 1: Exemplo pequeno com 5 cidades (A, B, C, D, E)
-    # Matriz simétrica onde matriz[i][j] = distância da cidade i para cidade j
-    grafo_pequeno = Grafo(
-        nome="Grafo de Teste 5 Cidades",
-        nomes_cidades=["A", "B", "C", "D", "E"],
-        matriz_distancias=[
-            #    A   B   C   D   E
-            [0, 10, 15, 20, 25],  # Distâncias de A
-            [10, 0, 35, 25, 30],  # Distâncias de B
-            [15, 35, 0, 30, 10],  # Distâncias de C
-            [20, 25, 30, 0, 5],   # Distâncias de D
-            [25, 30, 10, 5, 0]    # Distâncias de E
-        ]
-    )
-
-    # Grafo 2: Exemplo com cidades do Ceará
-    # Baseado em distâncias aproximadas entre cidades reais
-    grafo_simples = Grafo(
-        nome="Grafo Simples 4 Cidades",
-        nomes_cidades=["Fortaleza", "Quixadá", "Canindé", "Sobral"],
-        matriz_distancias=[
-            #      Fort  Quix  Cani  Sobr
-            [0, 160, 120, 230], # Distâncias de Fortaleza
-            [160, 0, 70, 250],  # Distâncias de Quixadá
-            [120, 70, 0, 180],  # Distâncias de Canindé
-            [230, 250, 180, 0]  # Distâncias de Sobral
-        ]
-    )
-    
-    # Grafo 3: Exemplo mais complexo com 6 pontos
-    # Demonstra a capacidade do algoritmo em problemas maiores
-    grafo_alternativo = Grafo(
-        nome="Grafo Alternativo 6 Cidades",
-        nomes_cidades=["P1", "P2", "P3", "P4", "P5", "P6"],
-        matriz_distancias=[
-            #    P1  P2  P3  P4  P5  P6
-            [0, 29, 82, 46, 68, 52],  # Distâncias de P1
-            [29, 0, 55, 46, 42, 42],  # Distâncias de P2
-            [82, 55, 0, 68, 46, 29],  # Distâncias de P3
-            [46, 46, 68, 0, 24, 29],  # Distâncias de P4
-            [68, 42, 46, 24, 0, 24],  # Distâncias de P5
-            [52, 42, 29, 29, 24, 0]   # Distâncias de P6
-        ]
-    )
-
-    # =================================================================
-    # PASSO 2: CONFIGURAÇÃO DOS PARÂMETROS DO ALGORITMO
-    # =================================================================
-
-    # Lista contendo todos os grafos que queremos resolver
-    lista_de_grafos = [grafo_pequeno, grafo_simples, grafo_alternativo]
-    
-    # Parâmetros do Algoritmo Genético
-    NUMERO_DE_GERACOES = 500    # Quantas gerações o algoritmo vai evoluir
-    TAXA_DE_MUTACAO = 0.02      # 2% de chance de mutação para cada indivíduo
-    TAMANHO_POPULACAO = 100     # Quantos indivíduos em cada geração
-
-    # =================================================================
-    # PASSO 3: EXECUÇÃO DO ALGORITMO PARA CADA GRAFO
-    # =================================================================
-    
-    print("="*60)
-    print("INICIANDO RESOLUÇÃO DO PROBLEMA DO CAIXEIRO VIAJANTE")
-    print("USANDO ALGORITMO GENÉTICO")
-    print("="*60)
-    print(f"Parâmetros:")
-    print(f"- Gerações: {NUMERO_DE_GERACOES}")
-    print(f"- Taxa de Mutação: {TAXA_DE_MUTACAO*100}%")
-    print(f"- Tamanho da População: {TAMANHO_POPULACAO}")
-    print(f"- Grafos a resolver: {len(lista_de_grafos)}")
-    print("="*60)
-
-    # Itera sobre a lista de grafos e resolve cada um
-    for i, grafo_para_resolver in enumerate(lista_de_grafos, 1):
-        print(f"\n[{i}/{len(lista_de_grafos)}] Processando: {grafo_para_resolver.nome}")
-        print(f"Número de cidades: {grafo_para_resolver.total_cidades()}")
+    # Verifica se deve executar experimentos TSPLIB95
+    if len(sys.argv) > 1 and sys.argv[1] == '--experimentos':
         
-        # Cria uma instância do algoritmo genético para este grafo
-        ag = AlgoritmoGenetico(grafo=grafo_para_resolver, tamanho_populacao=TAMANHO_POPULACAO)
+        print("EXPERIMENTOS AUTOMATIZADOS - TSPLIB95")
+        print("=" * 60)
+        print("Executando algoritmo genético 10 vezes para cada grafo")
+        print("Coletando: melhor solução + tempo de execução")
+        print("=" * 60)
         
-        # Executa o algoritmo
-        ag.executar(num_geracoes=NUMERO_DE_GERACOES, taxa_mutacao=TAXA_DE_MUTACAO)
-    
-    print("="*60)
-    print("EXECUÇÃO CONCLUÍDA!")
-    print("Todas as instâncias do problema foram resolvidas.")
-    print("="*60)
+        # Executa experimentos TSPLIB95
+        resultados = executar_experimentos_tsplib(
+            grafos=None,  # Carrega automaticamente
+            num_execucoes=10,  # 10 execuções por grafo conforme solicitado
+            arquivo_csv="resultados_experimentos_tsplib95.csv"
+        )
+        
+        if resultados:
+            print(f"\nRESUMO DOS EXPERIMENTOS:")
+            print(f"Total de execuções: {len(resultados)}")
+            print(f"Grafos testados: {len(set(r['nome_grafo'] for r in resultados))}")
+            print(f"Arquivo gerado: resultados_experimentos_tsplib95.csv")
+            
+            # Estatísticas gerais
+            print(f"\nESTATÍSTICAS GERAIS:")
+            for grafo_nome in sorted(set(r['nome_grafo'] for r in resultados)):
+                resultados_grafo = [r for r in resultados if r['nome_grafo'] == grafo_nome]
+                distancias = [r['melhor_solucao'] for r in resultados_grafo]
+                tempos = [r['tempo_execucao'] for r in resultados_grafo]
+                
+                print(f"   {grafo_nome:<12}: "
+                      f"Melhor={min(distancias):6.0f} | "
+                      f"Média={sum(distancias)/len(distancias):6.0f} | "
+                      f"Tempo={sum(tempos)/len(tempos):.2f}s")
