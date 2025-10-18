@@ -80,26 +80,18 @@ class Grafo:
         
         # Calcula matriz de distâncias usando a função do tsplib95
         self.matriz_distancias = [[0] * self.dimensao for _ in range(self.dimensao)]
-        
-        for i in range(self.dimensao):
-            for j in range(self.dimensao):
-                if i != j:
-                    # CORREÇÃO: tsplib95 usa indexação 1-based, mas alguns formatos têm limitações
-                    # Precisamos verificar se o índice é válido antes de acessar
-                    try:
-                        peso = problema.get_weight(i + 1, j + 1)
-                        self.matriz_distancias[i][j] = peso
-                    except IndexError:
-                        # Alguns formatos como LOWER_DIAG_ROW não permitem todos os acessos
-                        # Neste caso, usamos a simetria da matriz para obter o valor
-                        try:
-                            peso = problema.get_weight(j + 1, i + 1)
-                            self.matriz_distancias[i][j] = peso
-                        except IndexError:
-                            # Se ainda não conseguir, define como 0 (não deveria acontecer)
-                            self.matriz_distancias[i][j] = 0
-                else:
-                    self.matriz_distancias[i][j] = 0
+
+        graph = problema.get_graph()
+
+        # Percorre as arestas e grava na matriz de adjacência
+        for u, v, data in graph.edges(data=True):
+            try:
+                peso = data.get("weight", None)
+                self.matriz_distancias[u-1][v-1] = peso
+                self.matriz_distancias[v-1][u-1] = peso
+            except Exception:
+                print(f":: Erro na leitura da aresta ({u},{v})")
+
 
     def obter_distancia(self, cidade_origem_idx, cidade_destino_idx):
         """
@@ -157,7 +149,7 @@ class Individuo:
     - cromossomo: Lista de índices representando a ordem das cidades a visitar
     """
 
-    def __init__(self, grafo, geracao=0):
+    def __init__(self, grafo, geracao=0, cromossomo_previo=None):
         """
         Inicializa um indivíduo com uma rota aleatória.
         
@@ -171,8 +163,11 @@ class Individuo:
         
         # cria um cromossomo com uma rota aleatória sem repetição de cidades
         # exemplo: [0, 3, 1, 2] significa visitar cidade 0 → 3 → 1 → 2 → 0 na ordem que está no vetor
-        self.cromossomo = list(range(self.grafo.total_cidades()))
-        random.shuffle(self.cromossomo)
+        if cromossomo_previo is None:
+            self.cromossomo = list(range(self.grafo.total_cidades()))
+            random.shuffle(self.cromossomo)
+        else:
+            self.cromossomo = cromossomo_previo
 
     def calcular_fitness(self):
         """
@@ -215,10 +210,8 @@ class Individuo:
         self._preencher_genes_filho(filho2_cromossomo, self.cromossomo, tamanho)
         
         # cria os filhos
-        filho1 = Individuo(self.grafo, self.geracao + 1)
-        filho2 = Individuo(self.grafo, self.geracao + 1)
-        filho1.cromossomo = filho1_cromossomo
-        filho2.cromossomo = filho2_cromossomo
+        filho1 = Individuo(self.grafo, self.geracao + 1, filho1_cromossomo)
+        filho2 = Individuo(self.grafo, self.geracao + 1, filho2_cromossomo)
 
         return [filho1, filho2]
 
@@ -271,7 +264,7 @@ class AlgoritmoGenetico:
     - melhor_solucao: Melhor indivíduo encontrado até o momento
     """
 
-    def __init__(self, grafo, tamanho_populacao=50):
+    def __init__(self, grafo, tamanho_populacao=50, stagnacao=250):
         """
         Inicializa o algoritmo genético.
         """
@@ -280,14 +273,99 @@ class AlgoritmoGenetico:
         self.populacao = []
         self.geracao = 0
         self.melhor_solucao = None
+        self.stagnacao = stagnacao
+
+
+    def _greedy_tour(self, dist):
+        """
+        Constrói um tour do TSP usando a heurística gulosa de adição de arestas.
+        Entrada:
+            dist: matriz NxN de distâncias (simétrica).
+        Saída:
+            tour: lista de vértices representando o ciclo Hamiltoniano.
+        """
+        n = len(dist)
+
+        # --- 1. Cria lista de todas as arestas (i,j) com i < j, ordenadas por distância ---
+        edge_list = [(dist[i][j], i, j) for i in range(n) for j in range(i + 1, n)]
+        random.shuffle(edge_list)
+        edges = sorted(edge_list, key=lambda x: x[0])
+
+        # --- 2. Inicializações ---
+        degree = [0] * n              # grau de cada vértice
+        parent = list(range(n))       # para união-busca (detecta ciclos)
+        edges_in_tour = []            # arestas escolhidas (i,j)
+
+        # Funções auxiliares de Union-Find ------------------------
+        def find(u: int) -> int:
+            while parent[u] != u:
+                parent[u] = parent[parent[u]]
+                u = parent[u]
+            return u
+
+        def union(u: int, v: int):
+            ru, rv = find(u), find(v)
+            parent[rv] = ru
+
+        # --- 3. Percorre as arestas em ordem crescente ---
+        for _, i, j in edges:
+            if degree[i] == 2 or degree[j] == 2:
+                continue  # já saturado
+            ri, rj = find(i), find(j)
+
+            # Verifica se adiciona aresta:
+            # (a) Não cria ciclo prematuro (exceto na última adição)
+            if ri == rj:
+                # só podemos fechar o ciclo se for a última aresta (N-1 adicionadas)
+                if len(edges_in_tour) == n - 1:
+                    edges_in_tour.append((i, j))
+                    degree[i] += 1
+                    degree[j] += 1
+                else:
+                    continue
+            else:
+                # conecta os componentes
+                union(i, j)
+                edges_in_tour.append((i, j))
+                degree[i] += 1
+                degree[j] += 1
+
+            # Parar quando tivermos N arestas → tour completo
+            if len(edges_in_tour) == n:
+                break
+
+        # --- 4. Reconstruir o tour a partir das arestas escolhidas ---
+        # Construir lista de adjacência
+        adj = [[] for _ in range(n)]
+        for i, j in edges_in_tour:
+            adj[i].append(j)
+            adj[j].append(i)
+
+        # Encontrar o ciclo iniciando em 0
+        tour = [0]
+        prev, current = -1, 0
+        while True:
+            neighbors = adj[current]
+            next_vertex = neighbors[0] if neighbors[0] != prev else neighbors[1]
+            tour.append(next_vertex)
+            if next_vertex == 0:
+                break
+            prev, current = current, next_vertex
+
+        return tour[:-1]  # remove repetição do 0 final
+
 
     def _inicializar_populacao(self):
         """
         Cria a população inicial com indivíduos aleatórios.
         Cada indivíduo representa uma rota aleatória pelas cidades.
         """
-        for _ in range(self.tamanho_populacao):
+        for _ in range(self.tamanho_populacao-3):
             self.populacao.append(Individuo(self.grafo))
+
+        for _ in range(3):
+            self.populacao.append(Individuo(self.grafo, cromossomo_previo=self._greedy_tour(self.grafo.matriz_distancias)))
+        
 
     def _ordenar_populacao(self):
         """
@@ -314,11 +392,37 @@ class AlgoritmoGenetico:
             """Realiza um torneio e retorna o vencedor."""
             competidores = random.sample(self.populacao, tamanho_torneio)
             competidores.sort(key=lambda ind: ind.distancia_percorrida)
-            return competidores[0]  # retorna o melhor do torneio
+            return competidores[0]  # retornTítuloa o melhor do torneio
 
         pai1 = realizar_torneio()
         pai2 = realizar_torneio()
         return pai1, pai2
+    
+
+    def _two_opt_first_improvement(self, tour, dist):
+        """
+        Heurística de busca local 2-OPT
+        Parâmetros da entrada:
+            tour - lista dos vértices (cromossomo)
+            dist - matriz de distâncias
+        """
+        n = len(tour)
+        improved = True
+        while improved:
+            improved = False
+            for i in range(n - 1):
+                for j in range(i + 2, n if i > 0 else n - 1):  # evita trocar o par (n-1,0)
+                    a, b = tour[i], tour[i+1]
+                    c, d = tour[j], tour[(j+1) % n]
+                    delta = dist[a][b] + dist[c][d] - (dist[a][c] + dist[b][d])
+                    if delta > 1e-12:  # melhoria
+                        # Reverter segmento tour[i+1 : j+1]
+                        tour[i+1:j+1] = reversed(tour[i+1:j+1])
+                        improved = True
+                        break
+                if improved:
+                    break
+        return tour
 
     def executar(self, num_geracoes, taxa_mutacao, verbose=True):
         """
@@ -360,13 +464,22 @@ class AlgoritmoGenetico:
         if verbose:
             print(f"Geração 0 | Melhor distância: {self.melhor_solucao.distancia_percorrida}")
 
+        contador_stagnacao = 0
+
         # PASSO 3: Loop evolutivo - executa por num_geracoes
         for geracao_atual in range(1, num_geracoes + 1):
+
             nova_populacao = []
             
             # ELITISMO: mantém os melhores indivíduos (10% da população)
             elite_size = int(self.tamanho_populacao * 0.1)
             nova_populacao.extend(self.populacao[:elite_size])
+
+            # 2-OPT Local search
+            # Realiza uma busca local nos 10% melhores da população 
+            for individuo in nova_populacao:
+                individuo.cromossomo[:] = self._two_opt_first_improvement(individuo.cromossomo, self.grafo.matriz_distancias)
+                
 
             # REPRODUÇÃO: gera o restante da população via crossover e mutação
             while len(nova_populacao) < self.tamanho_populacao:
@@ -398,10 +511,17 @@ class AlgoritmoGenetico:
             # ATUALIZAÇÃO: atualiza a melhor solução se encontrou algo melhor
             if self.populacao[0].distancia_percorrida < self.melhor_solucao.distancia_percorrida:
                 self.melhor_solucao = self.populacao[0]
+                contador_stagnacao = 0
+            else:
+                contador_stagnacao += 1
             
             # RELATÓRIO: mostra progresso a cada 100 gerações
             if verbose and geracao_atual % 100 == 0:
                 print(f"Geração {geracao_atual} | Melhor distância: {self.melhor_solucao.distancia_percorrida}")
+
+            # Aborta geração se o algoritmo estiver estagnado
+            if contador_stagnacao >= self.stagnacao:
+                break
 
         # Calcula tempo total de execução
         tempo_execucao = time.time() - inicio_tempo
@@ -433,7 +553,7 @@ class AlgoritmoGenetico:
 # FUNÇÕES PARA EXPERIMENTOS COM TSPLIB95
 # =================================================================
 
-def carregar_grafos_tsplib(diretorio="TSPLIB95", limite_vertices=100):
+def carregar_grafos_tsplib(diretorio="TSPLIB95", limite_vertices=400):
     """
     Carrega todos os grafos TSP válidos do diretório especificado.
     
@@ -496,6 +616,7 @@ def executar_experimentos_tsplib(grafos=None, num_execucoes=10, arquivo_csv="res
     GERACOES = 500
     TAXA_MUTACAO = 0.02 # Padrão 
     TAMANHO_POPULACAO = 100
+    MAX_STAGNACAO = 200
     
     print(f"\nINICIANDO EXPERIMENTOS AUTOMATIZADOS")
     print(f"Configuração:")
@@ -525,7 +646,7 @@ def executar_experimentos_tsplib(grafos=None, num_execucoes=10, arquivo_csv="res
             random.seed(time.time() * 1000 + experimento_atual)
             
             # Cria e executa o algoritmo genético
-            ag = AlgoritmoGenetico(grafo, tamanho_populacao=TAMANHO_POPULACAO)
+            ag = AlgoritmoGenetico(grafo, tamanho_populacao=TAMANHO_POPULACAO, stagnacao=MAX_STAGNACAO)
             resultado = ag.executar(num_geracoes=GERACOES, taxa_mutacao=TAXA_MUTACAO, verbose=False)
             
             # Salva resultado com as métricas solicitadas
